@@ -1,0 +1,15 @@
+workerPoolSpecs:
+- machineSpec:
+    machineType: "${VERTEX_MACHINE_TYPE:-n1-highmem-8}"
+    acceleratorType: "${VERTEX_ACCELERATOR_TYPE:-NVIDIA_TESLA_T4}"
+    acceleratorCount: ${VERTEX_ACCELERATOR_COUNT:-1}
+  replicaCount: ${VERTEX_REPLICA_COUNT:-1}
+  containerSpec:
+    imageUri: "${VERTEX_IMAGE_URI}"
+    command: ["python", "shakespeare.py"]
+    args: ["--train", "--epochs", "${TRAIN_EPOCHS:-3}", "--batch_size", "${TRAIN_BATCH_SIZE:-16}", "--ckpt", "/gcs/checkpoints/model.pth"]
+    env:
+    - name: "HF_TOKEN"
+      value: "${HF_TOKEN}"
+baseOutputDirectory:
+  outputUriPrefix: "${VERTEX_OUTPUT_URI}"

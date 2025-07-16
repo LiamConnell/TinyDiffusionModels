@@ -226,6 +226,10 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
+    # Move diffusion constants to device
+    sqrt_alphas_cumprod = sqrt_alphas_cumprod.to(device)
+    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.to(device)
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     lm_model = AutoModelForCausalLM.from_pretrained(args.model_id).to(device)
     embed_matrix = lm_model.get_input_embeddings().weight.detach().to(device)
