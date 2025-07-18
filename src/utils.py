@@ -5,7 +5,7 @@ from typing import Union, Optional
 import subprocess
 
 import torch
-from anypath import AnyPath
+from google.cloud import storage
 
 
 def is_gcs_path(path: Union[str, Path]) -> bool:
@@ -13,76 +13,93 @@ def is_gcs_path(path: Union[str, Path]) -> bool:
     return str(path).startswith("gs://")
 
 
-def download_checkpoint_from_gcs(gcs_path: str, local_path: str) -> str:
-    """Download checkpoint from GCS if it doesn't exist locally."""
-    if os.path.exists(local_path):
-        print(f"Checkpoint already exists locally: {local_path}")
-        return local_path
+def parse_gcs_path(gcs_path: str) -> tuple[str, str]:
+    """Parse GCS path into bucket and blob names."""
+    if not gcs_path.startswith("gs://"):
+        raise ValueError(f"Not a GCS path: {gcs_path}")
     
-    if gcs_path.startswith("gs://"):
-        print(f"Downloading checkpoint from GCS: {gcs_path}")
-        try:
-            subprocess.run(["gsutil", "cp", gcs_path, local_path], check=True)
-            print(f"Downloaded checkpoint to: {local_path}")
-            return local_path
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to download from GCS: {e}")
-            raise
-    else:
-        return gcs_path
+    path_parts = gcs_path[5:].split("/", 1)
+    bucket_name = path_parts[0]
+    blob_name = path_parts[1] if len(path_parts) > 1 else ""
+    return bucket_name, blob_name
+
+
+def download_from_gcs(gcs_path: str, local_path: str) -> None:
+    """Download file from GCS to local path."""
+    bucket_name, blob_name = parse_gcs_path(gcs_path)
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.download_to_filename(local_path)
+
+
+def upload_to_gcs(local_path: str, gcs_path: str) -> None:
+    """Upload local file to GCS."""
+    bucket_name, blob_name = parse_gcs_path(gcs_path)
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_filename(local_path)
+
+
 
 
 def load_checkpoint(ckpt_path: Union[str, Path], device: str) -> dict:
-    """Load checkpoint from local path or GCS using AnyPath."""
-    path = AnyPath(ckpt_path)
+    """Load checkpoint from local path or GCS."""
+    ckpt_path = str(ckpt_path)
     
-    if path.is_cloud():
+    if is_gcs_path(ckpt_path):
         with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
             try:
-                # Download to temp file
-                path.download_to(tmp.name)
+                # Download from GCS to temp file
+                print(f"Downloading checkpoint from GCS: {ckpt_path}")
+                download_from_gcs(ckpt_path, tmp.name)
                 return torch.load(tmp.name, map_location=device)
             except Exception as e:
                 raise RuntimeError(f"Failed to download checkpoint from {ckpt_path}: {e}")
             finally:
                 os.unlink(tmp.name)
     else:
-        return torch.load(str(path), map_location=device)
+        return torch.load(ckpt_path, map_location=device)
 
 
 def save_checkpoint(model_state: dict, ckpt_path: Union[str, Path]) -> None:
-    """Save checkpoint to local path or GCS using AnyPath."""
-    path = AnyPath(ckpt_path)
+    """Save checkpoint to local path or GCS."""
+    ckpt_path = str(ckpt_path)
     
-    if path.is_cloud():
+    if is_gcs_path(ckpt_path):
         with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
             try:
                 torch.save(model_state, tmp.name)
-                path.upload_from(tmp.name)
+                print(f"Uploading checkpoint to GCS: {ckpt_path}")
+                upload_to_gcs(tmp.name, ckpt_path)
                 print(f"✔ Uploaded checkpoint to {ckpt_path}")
             except Exception as e:
                 raise RuntimeError(f"Failed to upload checkpoint to {ckpt_path}: {e}")
             finally:
                 os.unlink(tmp.name)
     else:
-        torch.save(model_state, str(path))
+        torch.save(model_state, ckpt_path)
         print(f"✔ Saved checkpoint to {ckpt_path}")
 
 
 def save_samples(content: Union[str, bytes], sample_path: Union[str, Path], 
                  mode: str = "w") -> None:
-    """Save samples to local path or GCS using AnyPath."""
-    path = AnyPath(sample_path)
+    """Save samples to local path or GCS."""
+    sample_path = str(sample_path)
     
-    if path.is_cloud():
-        with tempfile.NamedTemporaryFile(mode=mode, suffix=path.suffix, delete=False) as tmp:
+    if is_gcs_path(sample_path):
+        # Get file suffix
+        suffix = Path(sample_path).suffix
+        with tempfile.NamedTemporaryFile(mode=mode, suffix=suffix, delete=False) as tmp:
             try:
                 if isinstance(content, str):
                     tmp.write(content)
                 else:
                     tmp.write(content)
                 tmp.flush()
-                path.upload_from(tmp.name)
+                print(f"Uploading sample to GCS: {sample_path}")
+                upload_to_gcs(tmp.name, sample_path)
                 print(f"✔ Uploaded sample to {sample_path}")
             except Exception as e:
                 raise RuntimeError(f"Failed to upload sample to {sample_path}: {e}")
@@ -90,12 +107,12 @@ def save_samples(content: Union[str, bytes], sample_path: Union[str, Path],
                 os.unlink(tmp.name)
     else:
         # Ensure parent directory exists
-        path.parent.mkdir(parents=True, exist_ok=True)
+        Path(sample_path).parent.mkdir(parents=True, exist_ok=True)
         
         if isinstance(content, str):
-            path.write_text(content)
+            Path(sample_path).write_text(content)
         else:
-            path.write_bytes(content)
+            Path(sample_path).write_bytes(content)
         print(f"✔ Saved sample to {sample_path}")
 
 
@@ -106,10 +123,15 @@ def get_vertex_checkpoint_path(base_name: str) -> str:
     return base_name
 
 
-def get_samples_dir(base_dir: str = "samples") -> AnyPath:
+def get_samples_dir(base_dir: str = "samples") -> Path:
     """Get samples directory path, supporting both local and cloud storage."""
     if "AIP_MODEL_DIR" in os.environ:
         # In Vertex AI, save samples to cloud storage
-        model_dir = AnyPath(os.environ["AIP_MODEL_DIR"])
-        return model_dir.parent / "outputs" / base_dir
-    return AnyPath(base_dir)
+        model_dir = os.environ["AIP_MODEL_DIR"]
+        # Convert gs://bucket/path/model to gs://bucket/path/outputs/samples
+        if model_dir.startswith("gs://"):
+            base_path = model_dir.rsplit("/", 1)[0]  # Remove the last component (model)
+            return Path(f"{base_path}/outputs/{base_dir}")
+        else:
+            return Path(model_dir).parent / "outputs" / base_dir
+    return Path(base_dir)

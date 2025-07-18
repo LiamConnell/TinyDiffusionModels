@@ -10,9 +10,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
@@ -41,8 +38,9 @@ def q_sample(x0: torch.Tensor, t: torch.Tensor, noise=None):
     if noise is None:
         noise = torch.randn_like(x0)
     b = x0.shape[0]
-    sqrt_acp = sqrt_alphas_cumprod[t].view(b, 1, 1)
-    sqrt_om = sqrt_one_minus_alphas_cumprod[t].view(b, 1, 1)
+    device = x0.device
+    sqrt_acp = sqrt_alphas_cumprod[t].to(device).view(b, 1, 1)
+    sqrt_om = sqrt_one_minus_alphas_cumprod[t].to(device).view(b, 1, 1)
     return sqrt_acp * x0 + sqrt_om * noise
 
 class TinyTransformer(nn.Module):
@@ -121,9 +119,10 @@ def train(
     save_checkpoint(model.state_dict(), ckpt_path)
 
 def p_sample(model, x, t):
-    beta_t = betas[t].view(-1, 1, 1)
-    sqrt_one_minus = sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1)
-    sqrt_recip_alpha = (1.0 / torch.sqrt(alphas[t])).view(-1, 1, 1)
+    device = x.device
+    beta_t = betas[t].to(device).view(-1, 1, 1)
+    sqrt_one_minus = sqrt_one_minus_alphas_cumprod[t].to(device).view(-1, 1, 1)
+    sqrt_recip_alpha = (1.0 / torch.sqrt(alphas[t].to(device))).view(-1, 1, 1)
 
     model_mean = sqrt_recip_alpha * (x - beta_t / sqrt_one_minus * model(x, t))
     if t[0] == 0:
@@ -213,7 +212,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--seq_len", type=int, default=64)
-    parser.add_argument("--ckpt", type=str, default=get_vertex_checkpoint_path("text-model.pth") if "AIP_MODEL_DIR" in os.environ else "text_ckpt.pth")
+    parser.add_argument("--ckpt", type=str, default="gs://text-diffusion/diffusion/outputs/model/text-model.pth" if "AIP_MODEL_DIR" in os.environ else "text_ckpt.pth")
     parser.add_argument("--model_id", type=str, default="google/gemma-2b-it")
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--alpha", type=float, default=0.3)

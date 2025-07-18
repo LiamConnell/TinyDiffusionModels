@@ -1,61 +1,105 @@
-### Setup
+# TextDiffusion
 
-```
+Implementation of diffusion models for both images and text. Image diffusion uses standard DDPM on MNIST digits. Text diffusion is experimental, operating in embedding space with both pure diffusion and guided generation modes.
+
+## Setup
+
+```bash
 uv venv
 uv pip install -r requirements.txt
 ```
 
+## Local Training & Sampling
+
 ### Image Diffusion
 
-```
-uv run python mnist.py --train
-uv run python mnist.py --sample
+```bash
+# Train the model
+uv run python -m src.mnist --train
+
+# Generate samples
+uv run python -m src.mnist --sample
 ```
 
 ### Text Diffusion 
 
+```bash
+# Train the model
+uv run python -m src.shakespeare --train
+
+# Generate via pure diffusion
+uv run python -m src.shakespeare --sample
+
+# Generate via guided AR+diffusion (experimental)
+uv run python -m src.shakespeare --guided_sample
 ```
-uv run python shakespeare.py --train
-uv run python shakespeare.py --sample
-```
 
-#### (Experimental) Guided Generation
+## Vertex AI Deployment
 
-```
-uv run python shakespeare.py --guided_sample
-```
+### Deploy Jobs (Zero Configuration Required)
 
-### Deployment
-
-#### Google Cloud Vertex AI Training
-
-Train models on Vertex AI with GPU acceleration and automatic checkpoint saving to Cloud Storage:
+All configuration is predefined - simply choose your job type:
 
 ```bash
-# Setup (one-time)
-./deployment/setup_vertex_training.sh
+# Train text diffusion
+uv run python deployment/deploy.py shakespeare-training
 
-# Submit text diffusion training job
-python deployment/submit_vertex_training.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script shakespeare.py
+# Sample text diffusion  
+uv run python deployment/deploy.py shakespeare-sampling
 
-# Submit image diffusion training job  
-python deployment/submit_vertex_training.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script mnist.py
+# Train image diffusion
+uv run python deployment/deploy.py mnist-training
 
-# With custom parameters
-python deployment/submit_vertex_training.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script shakespeare.py --epochs 10 --batch-size 32
+# Sample image diffusion
+uv run python deployment/deploy.py mnist-sampling
+```
+
+### Monitor Jobs
+
+```bash
+# Check job status
+uv run python deployment/monitor.py JOB_ID
+
+# Read job logs
+uv run python deployment/monitor.py JOB_ID --logs
+
+# Show full job details
+uv run python deployment/monitor.py JOB_ID --full
+```
+
+### Download Checkpoints
+
+```bash
+# Download trained models from Cloud Storage
+gsutil cp gs://text-diffusion/diffusion/checkpoints/text-model.pth ./
+gsutil cp gs://text-diffusion/diffusion/checkpoints/image-model.pth ./
 ```
 
 **Features:**
-- **Automatic Checkpoint Saving**: Model checkpoints are automatically saved to `gs://your-bucket/diffusion/checkpoints/`
-- **Output Storage**: Training outputs saved to `gs://your-bucket/diffusion/outputs/`
-- **Script Selection**: Choose between `shakespeare.py` (text) or `mnist.py` (image) training
-- **Robust Storage**: Uses Cloud Storage for durability and easy access
+- **Zero Configuration**: All values hardcoded in config files - no environment variables needed
+- **Predefined Configs**: 4 ready-to-submit job configurations for all use cases
+- **GPU Acceleration**: T4 GPUs with configurable machine types
+- **Automatic Checkpoints**: Models saved to `gs://text-diffusion/diffusion/checkpoints/`
+- **Output Storage**: Training outputs saved to `gs://text-diffusion/diffusion/outputs/`
 
-**Checkpoint Access:**
-```bash
-# Download trained checkpoints
-gsutil cp gs://your-bucket/diffusion/checkpoints/text-model.pth ./
-gsutil cp gs://your-bucket/diffusion/checkpoints/image-model.pth ./
+## Project Structure
+
+```
+src/
+├── mnist.py          # Image diffusion on MNIST
+├── shakespeare.py    # Text diffusion in embedding space
+└── utils.py         # Shared utilities
+
+deployment/
+├── configs/         # Predefined Vertex AI job configs
+├── deploy.py        # Simple job submission
+└── monitor.py       # Job monitoring and logs
+
+samples/             # Generated outputs
+data/               # Training data (MNIST)
 ```
 
-Configuration is managed through `.env` file (created by setup script). Monitor jobs at the [Vertex AI Console](https://console.cloud.google.com/ai/training/jobs).
+## Architecture
+
+**Image Diffusion**: Standard DDPM with UNet, trains to predict noise at each timestep  
+**Text Diffusion**: Experimental approach using transformer in embedding space, supports both pure diffusion and guided generation mixing autoregressive and diffusion logits

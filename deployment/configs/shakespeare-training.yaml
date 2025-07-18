@@ -1,0 +1,13 @@
+workerPoolSpecs:
+- machineSpec:
+    machineType: "n1-highmem-8"
+    acceleratorType: "NVIDIA_TESLA_T4"
+    acceleratorCount: 1
+  replicaCount: 1
+  containerSpec:
+    imageUri: "gcr.io/learnagentspace/text-diffusion:latest"
+    command: ["python", "-m", "src.shakespeare"]
+    args: ["--train", "--epochs", "10", "--batch_size", "32", "--ckpt", "gs://text-diffusion/diffusion/checkpoints/text-model.pth"]
+baseOutputDirectory:
+  outputUriPrefix: "gs://text-diffusion/diffusion/outputs"
+enableWebAccess: false

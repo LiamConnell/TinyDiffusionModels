@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TextDiffusion implements both image and text diffusion models. The image diffusion (`mnist.py`) generates MNIST digits using standard DDPM. The text diffusion (`shakespeare.py`) is experimental, operating in embedding space rather than discrete tokens, with both pure diffusion and guided generation modes.
+TextDiffusion implements both image and text diffusion models. The image diffusion (`src/mnist.py`) generates MNIST digits using standard DDPM. The text diffusion (`src/shakespeare.py`) is experimental, operating in embedding space rather than discrete tokens, with both pure diffusion and guided generation modes.
 
 ## Common Commands
 
@@ -19,75 +19,69 @@ uv pip install -r requirements.txt
 #### Image Diffusion
 ```bash
 # Train the model
-uv run python mnist.py --train
+uv run python -m src.mnist.py --train
 
 # Generate samples
-uv run python mnist.py --sample
+uv run python -m src.mnist.py --sample
 ```
 
 #### Text Diffusion
 ```bash
 # Train the model
-uv run python shakespeare.py --train
+uv run python -m src.shakespeare.py --train
 
 # Generate via pure diffusion
-uv run python shakespeare.py --sample
+uv run python -m src.shakespeare.py --sample
 
 # Generate via guided AR+diffusion (experimental)
-uv run python shakespeare.py --guided_sample
+uv run python -m src.shakespeare.py --guided_sample
 ```
 
-### Vertex AI Training (Robust Cloud Storage)
+### Vertex AI Deployment
 
-#### Setup
+#### Deploy Jobs (Zero Configuration Required)
 ```bash
-# One-time setup
-./deployment/setup_vertex_training.sh
+# Train text diffusion
+uv run python deployment/deploy.py shakespeare-training
+
+# Sample text diffusion  
+uv run python deployment/deploy.py shakespeare-sampling
+
+# Train image diffusion
+uv run python deployment/deploy.py mnist-training
+
+# Sample image diffusion
+uv run python deployment/deploy.py mnist-sampling
 ```
 
-#### Submit Training Jobs
+#### Monitor Jobs
 ```bash
-# Text diffusion training
-python deployment/submit_vertex_training.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script shakespeare.py
+# Check job status
+uv run python deployment/monitor.py JOB_ID
 
-# Image diffusion training
-python deployment/submit_vertex_training.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script mnist.py
+# Read job logs
+uv run python deployment/monitor.py JOB_ID --logs
 
-# With custom parameters
-python deployment/submit_vertex_training.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script shakespeare.py --epochs 10 --batch-size 32
-```
-
-#### Submit Sampling Jobs
-```bash
-# Text diffusion sampling (pure diffusion)
-python deployment/submit_vertex_sampling.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script shakespeare.py
-
-# Text diffusion sampling (guided generation)
-python deployment/submit_vertex_sampling.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script shakespeare.py --sample-mode guided_sample
-
-# Image diffusion sampling
-python deployment/submit_vertex_sampling.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script mnist.py
-
-# With custom parameters
-python deployment/submit_vertex_sampling.py --project-id YOUR_PROJECT --bucket YOUR_BUCKET --script shakespeare.py --num-samples 10 --checkpoint gs://YOUR_BUCKET/diffusion/checkpoints/custom-model.pth
+# Show full job details
+uv run python deployment/monitor.py JOB_ID --full
 ```
 
 #### Download Checkpoints
 ```bash
 # Download trained models from Cloud Storage
-gsutil cp gs://your-bucket/diffusion/checkpoints/text-model.pth ./
-gsutil cp gs://your-bucket/diffusion/checkpoints/image-model.pth ./
+gsutil cp gs://text-diffusion/diffusion/checkpoints/text-model.pth ./
+gsutil cp gs://text-diffusion/diffusion/checkpoints/image-model.pth ./
 ```
 
 ## Architecture
 
-### Image Diffusion (`mnist.py`)
+### Image Diffusion (`src/mnist.py`)
 - **SimpleUNet**: UNet with residual blocks and temporal embeddings
 - **Standard DDPM**: Forward/reverse diffusion on pixel space
 - **Training**: Learns to predict noise at each timestep
 - **Sampling**: Reverse diffusion from pure noise
 
-### Text Diffusion (`shakespeare.py`)
+### Text Diffusion (`src/shakespeare.py`)
 - **TinyTransformer**: Transformer encoder for embedding space diffusion
 - **Embedding Space**: Uses pre-trained model embeddings as target space
 - **Two Generation Modes**:
@@ -110,23 +104,24 @@ gsutil cp gs://your-bucket/diffusion/checkpoints/image-model.pth ./
 ## Key Files
 
 ### Core Implementation
-- `mnist.py`: Image diffusion implementation
-- `shakespeare.py`: Text diffusion implementation  
+- `src/mnist.py`: Image diffusion implementation
+- `src/shakespeare.py`: Text diffusion implementation  
 - `Scratch.ipynb`: Experimental notebook
 
-### Vertex AI Training
-- `deployment/vertex_ai_config.yaml`: Vertex AI job configuration with Cloud Storage
-- `deployment/submit_vertex_training.py`: Training job submission script
-- `deployment/vertex_ai_sampling_config.yaml`: Vertex AI sampling job configuration
-- `deployment/submit_vertex_sampling.py`: Sampling job submission script
-- `deployment/setup_vertex_training.sh`: One-time Vertex AI setup
+### Vertex AI Deployment
+- `deployment/configs/shakespeare-training.yaml`: Text diffusion training config
+- `deployment/configs/shakespeare-sampling.yaml`: Text diffusion sampling config  
+- `deployment/configs/mnist-training.yaml`: Image diffusion training config
+- `deployment/configs/mnist-sampling.yaml`: Image diffusion sampling config
+- `deployment/deploy.py`: Simple job submission script
+- `deployment/monitor.py`: Job monitoring and logs script
 - `deployment/Dockerfile`: Container configuration for training jobs
 
 ### Outputs
 - `samples/`: Generated outputs (images and text)
 - `*.pth`: Local model checkpoints
-- `gs://bucket/diffusion/checkpoints/`: Cloud Storage checkpoints (Vertex AI)
-- `gs://bucket/diffusion/outputs/`: Cloud Storage training outputs
+- `gs://text-diffusion/diffusion/checkpoints/`: Cloud Storage checkpoints (Vertex AI)
+- `gs://text-diffusion/diffusion/outputs/`: Cloud Storage training outputs
 
 ## Technical Notes
 
@@ -136,14 +131,71 @@ gsutil cp gs://your-bucket/diffusion/checkpoints/image-model.pth ./
 - Guided generation alpha parameter controls AR vs diffusion mixture
 - Both implementations follow similar diffusion mathematics but operate in different spaces
 
-### Vertex AI Training
-- **Automatic Checkpoint Saving**: Checkpoints automatically saved to Cloud Storage
-- **Robust Storage**: Uses Google Cloud Storage for durability and accessibility
-- **GPU Acceleration**: Configurable machine types and accelerators
-- **Multi-Model Support**: Supports both text and image diffusion training
-- **Container-Based**: Uses Docker for consistent training environments
+### Vertex AI Deployment
+- **Zero Configuration**: All values hardcoded in config files - no environment variables needed
+- **Predefined Configs**: 4 ready-to-submit job configurations for all use cases
+- **Natural Language Interface**: Claude Code can modify configs based on user requests
+- **Built-in Monitoring**: Simple status checking and log viewing with automatic job tracking
+- **GPU Acceleration**: T4 GPUs with configurable machine types
 
 ### Checkpoint Management
 - **Local**: Saved as `.pth` files in project directory
-- **Cloud**: Automatically saved to `gs://bucket/diffusion/checkpoints/` during Vertex AI training
+- **Cloud**: Automatically saved to `gs://text-diffusion/diffusion/checkpoints/` during Vertex AI training
 - **Access**: Download with `gsutil cp` command for local inference
+
+## Claude Code Deployment Operations
+
+**IMPORTANT**: When the user submits a job, Claude Code should ALWAYS monitor the job status by default. Check the status periodically and provide updates to the user.
+
+### Job Submission and Monitoring Workflow
+1. **Submit Job**: Use `uv run python deployment/deploy.py JOB_TYPE`
+2. **Monitor Job**: Immediately start monitoring with `uv run python deployment/monitor.py JOB_ID`
+3. **Provide Updates**: Check status every few minutes and report to user
+4. **Handle Completion**: When job completes (success/failure), inform user of final status
+
+### Config Modifications
+Edit files in `deployment/configs/` directly based on natural language requests:
+- `shakespeare-training.yaml` - text diffusion training config
+- `shakespeare-sampling.yaml` - text diffusion sampling config  
+- `mnist-training.yaml` - image diffusion training config
+- `mnist-sampling.yaml` - image diffusion sampling config
+
+### Job Operations
+- **Submit**: `uv run python deployment/deploy.py JOB_TYPE`
+- **Monitor**: `uv run python deployment/monitor.py JOB_ID`
+- **Get Logs**: `uv run python deployment/monitor.py JOB_ID --logs`
+- **Full Details**: `uv run python deployment/monitor.py JOB_ID --full`
+
+### Common Config Changes
+- **Machine type**: Edit `machineType` field (e.g., `n1-standard-4`, `n1-highmem-8`)
+- **GPU type**: Edit `acceleratorType` field (e.g., `NVIDIA_TESLA_T4`, `NVIDIA_TESLA_V100`)  
+- **Training epochs**: Edit `--epochs` in args array
+- **Batch size**: Edit `--batch_size` in args array
+- **Sample count**: Edit `--n` in args array (sampling jobs only)
+
+### Troubleshooting and Testing
+When user asks for testing, troubleshooting, or if a job fails:
+
+1. **Get Job Logs**: `uv run python deployment/monitor.py JOB_ID --logs`
+2. **Analyze Errors**: Look for error messages, stack traces, or failure patterns
+3. **Common Issues to Check**:
+   - Out of memory errors (suggest smaller batch size or different machine type)
+   - GPU compatibility issues (suggest different accelerator type)
+   - File/checkpoint not found (check paths in config)
+   - Container/dependency issues (check Dockerfile and requirements)
+   - Timeout issues (suggest longer-running machine type)
+4. **Suggest Fixes**: Modify configs based on error analysis and resubmit job
+5. **Verify Fix**: Monitor the new job to ensure the issue is resolved
+
+### Example Troubleshooting Flow
+```bash
+# Job fails - get logs to diagnose
+uv run python deployment/monitor.py 12345 --logs
+
+# Common fixes based on error type:
+# - OOM error: Reduce batch_size in config file
+# - GPU error: Change acceleratorType in config file  
+# - File error: Check checkpoint paths in config file
+# - Then resubmit the job
+uv run python deployment/deploy.py shakespeare-training
+```

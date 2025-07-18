@@ -16,8 +16,7 @@ COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
 
 # Copy source code
-COPY shakespeare.py .
-COPY mnist.py .
+COPY src/ src/
 COPY .env .
 
 # Create samples directory
@@ -28,4 +27,4 @@ ENV PYTHONUNBUFFERED=1
 ENV TOKENIZERS_PARALLELISM=false
 
 # Run training by default
-CMD ["python", "shakespeare.py", "--train"]
+CMD ["python", "-m", "src.shakespeare", "--train"]

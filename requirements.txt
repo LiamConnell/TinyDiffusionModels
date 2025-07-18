@@ -9,3 +9,5 @@ datasets==3.6.0
 transformers
 
 google-cloud-storage
+
+anypath

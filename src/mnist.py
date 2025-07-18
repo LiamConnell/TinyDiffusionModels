@@ -37,8 +37,8 @@ def q_sample(x_start: torch.Tensor, t: torch.Tensor, noise=None):
     """Diffuse the data for a given timestep t."""
     if noise is None:
         noise = torch.randn_like(x_start)
-    sqrt_acp = sqrt_alphas_cumprod[t][:, None, None, None]
-    sqrt_om_acp = sqrt_one_minus_alphas_cumprod[t][:, None, None, None]
+    sqrt_acp = sqrt_alphas_cumprod[t].to(x_start.device)[:, None, None, None]
+    sqrt_om_acp = sqrt_one_minus_alphas_cumprod[t].to(x_start.device)[:, None, None, None]
     return sqrt_acp * x_start + sqrt_om_acp * noise
 
 
@@ -163,9 +163,9 @@ def train(model: nn.Module,
 
 def p_sample(model, x, t):
     """Perform one reverse step."""
-    betas_t = betas[t][:, None, None, None]
-    sqrt_one_minus_alphas_cumprod_t = sqrt_one_minus_alphas_cumprod[t][:, None, None, None]
-    sqrt_recip_alphas_t = (1.0 / torch.sqrt(alphas[t]))[:, None, None, None]
+    betas_t = betas[t].to(x.device)[:, None, None, None]
+    sqrt_one_minus_alphas_cumprod_t = sqrt_one_minus_alphas_cumprod[t].to(x.device)[:, None, None, None]
+    sqrt_recip_alphas_t = (1.0 / torch.sqrt(alphas[t].to(x.device)))[:, None, None, None]
 
     model_mean = sqrt_recip_alphas_t * (
         x - betas_t / sqrt_one_minus_alphas_cumprod_t * model(x, t)
@@ -173,7 +173,7 @@ def p_sample(model, x, t):
     if t[0] == 0:
         return model_mean
     noise = torch.randn_like(x)
-    posterior_var = betas[t][:, None, None, None]
+    posterior_var = betas[t].to(x.device)[:, None, None, None]
     return model_mean + torch.sqrt(posterior_var) * noise
 
 

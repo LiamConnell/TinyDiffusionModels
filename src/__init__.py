@@ -1,1 +1,2 @@
-# Empty init file to make src a package
+from dotenv import load_dotenv
+load_dotenv()
