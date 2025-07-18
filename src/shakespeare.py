@@ -1,4 +1,3 @@
-
 import argparse
 import math
 import os
@@ -14,8 +13,6 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 load_dotenv()
 
-from google.cloud import storage
-
 from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
@@ -23,12 +20,11 @@ from transformers import (
     AutoModelForCausalLM,
 )
 
+from .utils import load_checkpoint, save_checkpoint, get_vertex_checkpoint_path, get_samples_dir, save_samples
+
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 
-# -------------------------------------------------------------
-# 1. Diffusion constants
-# -------------------------------------------------------------
 T = 1_000  # number of diffusion steps
 
 def linear_beta_schedule(timesteps: int, start=1e-4, end=2e-2):
@@ -41,8 +37,6 @@ alphas_cumprod = torch.cumprod(alphas, dim=0)
 sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
 sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
 
-# Forward diffusion
-
 def q_sample(x0: torch.Tensor, t: torch.Tensor, noise=None):
     if noise is None:
         noise = torch.randn_like(x0)
@@ -50,8 +44,6 @@ def q_sample(x0: torch.Tensor, t: torch.Tensor, noise=None):
     sqrt_acp = sqrt_alphas_cumprod[t].view(b, 1, 1)
     sqrt_om = sqrt_one_minus_alphas_cumprod[t].view(b, 1, 1)
     return sqrt_acp * x0 + sqrt_om * noise
-
-# Model
 
 class TinyTransformer(nn.Module):
     def __init__(self, dim, n_heads=4, depth=3):
@@ -63,77 +55,10 @@ class TinyTransformer(nn.Module):
         self.time_emb = nn.Linear(1, dim)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor):
-        # Scale timestep to [0,1] and embed ➜ shape (B, 1, dim) for broadcast
         t_scaled = (t.float() / T).unsqueeze(-1)  # (B,1)
         time_bias = self.time_emb(t_scaled).unsqueeze(1)  # (B,1,dim)
         x = x + time_bias
         return self.encoder(x)
-
-# Checkpoint utils
-
-def is_gcs_path(path: str) -> bool:
-    """Check if path is a Google Cloud Storage path."""
-    return path.startswith("gs://")
-
-
-def _parse_gcs_path(gcs_path: str) -> tuple[str, str]:
-    """Parse GCS path into bucket and blob name."""
-    if not gcs_path.startswith("gs://"):
-        raise ValueError(f"Invalid GCS path: {gcs_path}")
-    
-    path_parts = gcs_path[5:].split("/", 1)  # Remove "gs://" prefix
-    if len(path_parts) != 2:
-        raise ValueError(f"Invalid GCS path format: {gcs_path}")
-    
-    bucket_name, blob_name = path_parts
-    return bucket_name, blob_name
-
-
-def load_checkpoint(ckpt_path: str, device: str):
-    """Load checkpoint from local path or GCS."""
-    if is_gcs_path(ckpt_path):
-        bucket_name, blob_name = _parse_gcs_path(ckpt_path)
-        
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        
-        with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
-            try:
-                blob.download_to_filename(tmp.name)
-                return torch.load(tmp.name, map_location=device)
-            except Exception as e:
-                raise RuntimeError(f"Failed to download checkpoint from GCS: {e}")
-            finally:
-                os.unlink(tmp.name)
-    else:
-        return torch.load(ckpt_path, map_location=device)
-
-
-def save_checkpoint(model_state: dict, ckpt_path: str):
-    """Save checkpoint to local path or GCS."""
-    if is_gcs_path(ckpt_path):
-        bucket_name, blob_name = _parse_gcs_path(ckpt_path)
-        
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        
-        with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
-            try:
-                torch.save(model_state, tmp.name)
-                blob.upload_from_filename(tmp.name)
-                print(f"✔ Uploaded checkpoint to {ckpt_path}")
-            except Exception as e:
-                raise RuntimeError(f"Failed to upload checkpoint to GCS: {e}")
-            finally:
-                os.unlink(tmp.name)
-    else:
-        torch.save(model_state, ckpt_path)
-        print(f"✔ Saved checkpoint to {ckpt_path}")
-
-
-# Data utils
 
 def load_text_dataset():
     """Return the raw Shakespeare corpus as a single string."""
@@ -165,8 +90,6 @@ def tokenize_corpus(text: str, tokenizer, seq_len: int):
     return chunks
 
 
-# Training
-
 def train(
     model,
     embed_matrix,
@@ -192,15 +115,10 @@ def train(
             optim.zero_grad(); loss.backward(); optim.step()
             pbar.set_postfix(loss=loss.item())
     
-    # Use AIP_MODEL_DIR if running on Vertex AI
-    if "AIP_MODEL_DIR" in os.environ:
-        ckpt_path = os.path.join(os.environ["AIP_MODEL_DIR"], "text-model.pth")
-        print(f"Using Vertex AI model directory: {ckpt_path}")
+    ckpt_path = get_vertex_checkpoint_path("text-model.pth") if "AIP_MODEL_DIR" in os.environ else ckpt_path
 
     print(f"✔ Saving checkpoint to {ckpt_path}...")
     save_checkpoint(model.state_dict(), ckpt_path)
-
-# Sampling
 
 def p_sample(model, x, t):
     beta_t = betas[t].view(-1, 1, 1)
@@ -223,17 +141,25 @@ def sample(
     seq_len=128,
 ):
     model.eval()
+    samples_dir = get_samples_dir("samples")
+    
     with torch.no_grad():
         x = torch.randn(n_samples, seq_len, embed_matrix.shape[1], device=device)
         for i in tqdm(reversed(range(T)), desc="Sampling"):
             t = torch.full((n_samples,), i, device=device, dtype=torch.long)
             x = p_sample(model, x, t)
-        # Decode: nearest‑neighbor lookup
         emb_norm = F.normalize(embed_matrix, dim=1)  # (V, dim)
         x_norm = F.normalize(x, dim=2)               # (B, L, dim)
         sims = torch.matmul(x_norm, emb_norm.T)      # (B, L, V)
         tokens = sims.argmax(dim=-1)                 # (B, L)
         texts = tokenizer.batch_decode(tokens, skip_special_tokens=True)
+        
+        for i, text in enumerate(texts):
+            print(text)
+            sample_path = samples_dir / f"sample_{i}.txt"
+            save_samples(text, sample_path)
+            print(f"✔ Wrote {sample_path}")
+        
         return texts
 
 
@@ -269,7 +195,6 @@ def guided_generate(
         outputs = base_lm(input_ids)
         ar_logits = outputs.logits[:, -1, :] / temperature   # (B,V)
 
-        # diffusion‑derived logits via cosine‑sim to target vector at this pos
         z_norm = F.normalize(diff_z[:, pos, :], dim=1)       # (B,dim)
         diff_logits = torch.matmul(z_norm, emb_norm.T) / temperature  # (B,V)
 
@@ -288,7 +213,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--seq_len", type=int, default=64)
-    parser.add_argument("--ckpt", type=str, default=os.path.join(os.environ.get("AIP_MODEL_DIR", "."), "text-model.pth") if "AIP_MODEL_DIR" in os.environ else "text_ckpt.pth")
+    parser.add_argument("--ckpt", type=str, default=get_vertex_checkpoint_path("text-model.pth") if "AIP_MODEL_DIR" in os.environ else "text_ckpt.pth")
     parser.add_argument("--model_id", type=str, default="google/gemma-2b-it")
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--alpha", type=float, default=0.3)
@@ -297,7 +222,6 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    # Move diffusion constants to device
     sqrt_alphas_cumprod = sqrt_alphas_cumprod.to(device)
     sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.to(device)
 
@@ -317,22 +241,16 @@ if __name__ == "__main__":
     if args.sample:
         diff_model.load_state_dict(load_checkpoint(args.ckpt, device))
         texts = sample(diff_model, embed_matrix, tokenizer, device, args.n, args.seq_len)
-        Path("samples").mkdir(exist_ok=True)
-        for i, t in enumerate(texts):
-            print(t)
-            fname = Path("samples") / f"sample_{i}.txt"
-            fname.write_text(t)
-            print(f"✔ Wrote {fname}")
 
     if args.guided_sample:
         diff_model.load_state_dict(load_checkpoint(args.ckpt, device))
         z = sample_diffusion_embeddings(diff_model, dim, device, args.n, args.seq_len)
         texts = guided_generate(lm_model, tokenizer, embed_matrix, z, alpha=args.alpha, max_len=args.seq_len)
-        Path("samples").mkdir(exist_ok=True)
-        for i, t in enumerate(texts):
-            fname = Path("samples") / f"guided_sample_{i}.txt"
-            fname.write_text(t)
-            print(f"✔ Wrote {fname}")
+        samples_dir = get_samples_dir("samples")
+        for i, text in enumerate(texts):
+            sample_path = samples_dir / f"guided_sample_{i}.txt"
+            save_samples(text, sample_path)
+            print(f"✔ Wrote {sample_path}")
 
     if not (args.train or args.sample or args.guided_sample):
         print("Nothing to do. Try --train or --guided_sample.")

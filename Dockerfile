@@ -17,6 +17,7 @@ RUN uv pip install --system -r requirements.txt
 
 # Copy source code
 COPY shakespeare.py .
+COPY mnist.py .
 COPY .env .
 
 # Create samples directory

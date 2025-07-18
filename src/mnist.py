@@ -1,15 +1,14 @@
 """
 Minimal implementation of an image diffusion model on MNIST 
 
-• Training: python image_diffusion_hello_world.py --train
-• Sampling: python image_diffusion_hello_world.py --sample --ckpt ckpt.pth
+• Training: python src/mnist.py --train
+• Sampling: python src/mnist.py --sample --ckpt ckpt.pth
 """
 import argparse
 import math
 import os
 from pathlib import Path
 from contextlib import contextmanager
-import subprocess
 
 import torch
 import torch.nn as nn
@@ -18,27 +17,8 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, utils
 from tqdm import tqdm
 
+from .utils import load_checkpoint, save_checkpoint, get_vertex_checkpoint_path, get_samples_dir, save_samples
 
-# Helpers 
-
-def download_checkpoint_from_gcs(gcs_path: str, local_path: str):
-    """Download checkpoint from GCS if it doesn't exist locally."""
-    if os.path.exists(local_path):
-        print(f"Checkpoint already exists locally: {local_path}")
-        return local_path
-    
-    if gcs_path.startswith("gs://"):
-        print(f"Downloading checkpoint from GCS: {gcs_path}")
-        try:
-            subprocess.run(["gsutil", "cp", gcs_path, local_path], check=True)
-            print(f"Downloaded checkpoint to: {local_path}")
-            return local_path
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to download from GCS: {e}")
-            raise
-    else:
-        # If it's not a GCS path, treat it as a local path
-        return gcs_path
 
 def linear_beta_schedule(timesteps: int, start=1e-4, end=2e-2):
     """Linear schedule from Ho et al. 2020."""
@@ -49,13 +29,9 @@ betas = linear_beta_schedule(timesteps)
 alphas = 1.0 - betas
 alphas_cumprod = torch.cumprod(alphas, dim=0)
 
-# precomute
-
 sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
 sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
 
-
-# Forward diffusion (q sample)
 
 def q_sample(x_start: torch.Tensor, t: torch.Tensor, noise=None):
     """Diffuse the data for a given timestep t."""
@@ -65,8 +41,6 @@ def q_sample(x_start: torch.Tensor, t: torch.Tensor, noise=None):
     sqrt_om_acp = sqrt_one_minus_alphas_cumprod[t][:, None, None, None]
     return sqrt_acp * x_start + sqrt_om_acp * noise
 
-
-# Model
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_ch, out_ch):
@@ -81,7 +55,6 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x, t):
         h = F.relu(self.conv1(x))
-        # Inject timestep as bias
         time_bias = self.time_emb(t).view(t.shape[0], -1, 1, 1)
         h = h + time_bias
         h = F.relu(self.conv2(h))
@@ -92,14 +65,11 @@ class SimpleUNet(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # Encoder
         self.rb1 = ResidualBlock( 1, 32)     # 1  → 32
         self.rb2 = ResidualBlock(32, 64)     # 32 → 64
 
-        # Bottleneck
         self.rb3 = ResidualBlock(64, 64)     # 64 → 64
 
-        # Decoder  (64-upsampled + 32-skip = 96 input channels)
         self.rb4 = ResidualBlock(96, 32)     # 96 → 32
         self.out = nn.Conv2d(32, 1, kernel_size=1)
 
@@ -128,20 +98,29 @@ def eval_mode(module: nn.Module):
 
 def sample_images(model: nn.Module, device: str, epoch: int,
                   n_samples: int = 25, outdir: str = "samples"):
-    out_path = Path(outdir)
-    out_path.mkdir(exist_ok=True, parents=True)
+    samples_dir = get_samples_dir(outdir)
+    
     with eval_mode(model), torch.no_grad():
         x = torch.randn(n_samples, 1, 28, 28, device=device)
         for i in reversed(range(timesteps)):
             t = torch.full((n_samples,), i, device=device, dtype=torch.long)
             x = p_sample(model, x, t)
         x = (x.clamp(-1, 1) + 1) / 2
-        utils.save_image(
-            x, out_path / f"epoch_{epoch:03d}.png", nrow=int(math.sqrt(n_samples))
-        )
-    print(f"[epoch {epoch}] saved samples to {out_path}/epoch_{epoch:03d}.png")
-
-# TRAIN
+        
+        # Save using torchvision's save_image to get a grid
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            utils.save_image(x, tmp.name, nrow=int(math.sqrt(n_samples)))
+            
+            # Read the image bytes and save using our utils
+            with open(tmp.name, "rb") as f:
+                image_bytes = f.read()
+            
+            sample_path = samples_dir / f"epoch_{epoch:03d}.png"
+            save_samples(image_bytes, sample_path, mode="wb")
+            os.unlink(tmp.name)
+            
+    print(f"[epoch {epoch}] saved samples to {sample_path}")
 
 def train(model: nn.Module,
           device: str,
@@ -152,10 +131,7 @@ def train(model: nn.Module,
           sample_every_epoch: bool = True,
           samples_per_epoch: int = 25):
     
-    # Use AIP_MODEL_DIR if running on Vertex AI
-    if "AIP_MODEL_DIR" in os.environ:
-        ckpt_path = os.path.join(os.environ["AIP_MODEL_DIR"], "image-model.pth")
-        print(f"Using Vertex AI model directory: {ckpt_path}")
+    ckpt_path = get_vertex_checkpoint_path("image-model.pth") if "AIP_MODEL_DIR" in os.environ else ckpt_path
 
     ds = datasets.MNIST(
         "./data", train=True, download=True,
@@ -183,10 +159,7 @@ def train(model: nn.Module,
         if sample_every_epoch:
             sample_images(model, device, epoch + 1, samples_per_epoch)
 
-    torch.save(model.state_dict(), ckpt_path)
-    print(f"Checkpoint saved to {ckpt_path}")
-
-# SAMPLE
+    save_checkpoint(model.state_dict(), ckpt_path)
 
 def p_sample(model, x, t):
     """Perform one reverse step."""
@@ -205,22 +178,32 @@ def p_sample(model, x, t):
 
 
 def sample(model: nn.Module, device: str, n_samples=25, ckpt_path="ckpt.pth", outdir="samples"):
-    # Handle GCS checkpoint paths
-    if ckpt_path.startswith("gs://"):
-        local_ckpt_path = os.path.basename(ckpt_path)
-        ckpt_path = download_checkpoint_from_gcs(ckpt_path, local_ckpt_path)
-    
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    model.load_state_dict(load_checkpoint(ckpt_path, device))
     model.eval()
+    
+    samples_dir = get_samples_dir(outdir)
+    
     with torch.no_grad():
         x = torch.randn(n_samples, 1, 28, 28, device=device)
         for i in tqdm(reversed(range(timesteps)), desc="Sampling"):
             t = torch.full((n_samples,), i, device=device, dtype=torch.long)
             x = p_sample(model, x, t)
         x = (x.clamp(-1, 1) + 1) / 2  # back to [0,1]
-        Path(outdir).mkdir(exist_ok=True)
-        utils.save_image(x, os.path.join(outdir, "samples.png"), nrow=int(math.sqrt(n_samples)))
-        print(f"Saved samples to {outdir}/samples.png")
+        
+        # Save using torchvision's save_image to get a grid
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            utils.save_image(x, tmp.name, nrow=int(math.sqrt(n_samples)))
+            
+            # Read the image bytes and save using our utils
+            with open(tmp.name, "rb") as f:
+                image_bytes = f.read()
+            
+            sample_path = samples_dir / "samples.png"
+            save_samples(image_bytes, sample_path, mode="wb")
+            os.unlink(tmp.name)
+            
+        print(f"Saved samples to {sample_path}")
 
 
 if __name__ == "__main__":
@@ -229,7 +212,7 @@ if __name__ == "__main__":
     parser.add_argument("--sample", action="store_true", help="Generate samples")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--ckpt", type=str, default=os.path.join(os.environ.get("AIP_MODEL_DIR", "."), "image-model.pth") if "AIP_MODEL_DIR" in os.environ else "ckpt.pth")
+    parser.add_argument("--ckpt", type=str, default=get_vertex_checkpoint_path("image-model.pth") if "AIP_MODEL_DIR" in os.environ else "ckpt.pth")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

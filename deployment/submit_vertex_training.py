@@ -31,7 +31,9 @@ def build_and_push_image(project_id, image_name):
     image_uri = f"gcr.io/{project_id}/{image_name}:latest"
     
     # Build image
+    # dockerfile_path = Path(__file__).parent / "Dockerfile"
     run_command(["docker", "build", "-t", image_uri, "."])
+    # run_command(["docker", "build", "-f", str(dockerfile_path), "-t", image_uri, ".."])
     
     # Configure Docker for GCR
     run_command(["gcloud", "auth", "configure-docker", "--quiet"])
@@ -56,14 +58,19 @@ def substitute_env_vars(template_content):
     template = string.Template(result)
     return template.safe_substitute(os.environ)
 
-def submit_training_job(project_id, region, image_uri, bucket_name, epochs=3, batch_size=16):
+def submit_training_job(project_id, region, image_uri, bucket_name, epochs=3, batch_size=16, script="shakespeare.py"):
     """Submit training job to Vertex AI"""
     
     # Set required environment variables (only if not already set)
+    model_name = "text-model" if script == "shakespeare.py" else "image-model"
     env_defaults = {
-        'VERTEX_JOB_NAME': f"text-diffusion-training-{os.getenv('USER', 'user')}",
+        'VERTEX_JOB_NAME': f"diffusion-training-{model_name}-{os.getenv('USER', 'user')}",
         'VERTEX_IMAGE_URI': image_uri,
-        'VERTEX_OUTPUT_URI': f"gs://{bucket_name}/text-diffusion/outputs",
+        'BUCKET_NAME': bucket_name,
+        # 'VERTEX_OUTPUT_URI': f"gs://{bucket_name}/diffusion/outputs",
+        # 'VERTEX_CHECKPOINT_DIR': f"gs://{bucket_name}/diffusion/checkpoints",
+        'TRAIN_SCRIPT': script,
+        'MODEL_NAME': model_name,
         'TRAIN_EPOCHS': str(epochs),
         'TRAIN_BATCH_SIZE': str(batch_size),
         'VERTEX_MACHINE_TYPE': 'n1-standard-4',
@@ -78,7 +85,7 @@ def submit_training_job(project_id, region, image_uri, bucket_name, epochs=3, ba
             os.environ[key] = default_value
     
     # Read and substitute template
-    template_path = Path("vertex_ai_config.yaml")
+    template_path = Path(__file__).parent / "vertex_ai_config.yaml"
     if not template_path.exists():
         raise FileNotFoundError(f"Template file {template_path} not found")
     
@@ -120,6 +127,7 @@ def main():
     parser.add_argument("--epochs", type=int, help="Number of training epochs (overrides env var)")
     parser.add_argument("--batch-size", type=int, help="Training batch size (overrides env var)")
     parser.add_argument("--image-name", help="Docker image name (overrides env var)")
+    parser.add_argument("--script", choices=["shakespeare.py", "mnist.py"], default="shakespeare.py", help="Training script to run")
     parser.add_argument("--skip-build", action="store_true", help="Skip Docker build/push")
     
     args = parser.parse_args()
@@ -130,8 +138,8 @@ def main():
     project_id = args.project_id or os.getenv("GCP_PROJECT_ID")
     region = args.region or os.getenv("VERTEX_REGION", "us-central1")
     bucket_name = args.bucket or os.getenv("GCS_BUCKET")
-    epochs = args.epochs or int(os.getenv("TRAIN_EPOCHS", "3"))
-    batch_size = args.batch_size or int(os.getenv("TRAIN_BATCH_SIZE", "16"))
+    epochs = args.epochs if args.epochs is not None else int(os.getenv("TRAIN_EPOCHS", "3"))
+    batch_size = args.batch_size if args.batch_size is not None else int(os.getenv("TRAIN_BATCH_SIZE", "16"))
     image_name = args.image_name or os.getenv("VERTEX_IMAGE_NAME", "text-diffusion")
     
     # Validate required parameters
@@ -162,7 +170,8 @@ def main():
         image_uri=image_uri,
         bucket_name=bucket_name,
         epochs=epochs,
-        batch_size=batch_size
+        batch_size=batch_size,
+        script=args.script
     )
     
     print(f"""
@@ -170,7 +179,10 @@ def main():
 https://console.cloud.google.com/vertex-ai/training/custom-jobs?inv=1&invt=Ab23xg&project={project_id}
 
 📁 Outputs will be saved to:
-gs://{bucket_name}/text-diffusion/outputs/
+gs://{bucket_name}/diffusion/outputs/
+
+💾 Checkpoints will be saved to:
+gs://{bucket_name}/diffusion/checkpoints/
 """)
 
 if __name__ == "__main__":

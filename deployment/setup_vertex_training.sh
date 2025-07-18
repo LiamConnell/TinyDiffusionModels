@@ -56,8 +56,9 @@ else
     echo -e "${GREEN}✅ Bucket gs://$BUCKET_NAME already exists${NC}"
 fi
 
-# Make the submission script executable
-chmod +x submit_vertex_training.py
+# Make the submission scripts executable
+chmod +x deployment/submit_vertex_training.py
+chmod +x deployment/submit_vertex_sampling.py
 
 # Create .env file if it doesn't exist
 ENV_FILE=".env"
@@ -81,10 +82,16 @@ echo "1. Edit .env file and add your HF_TOKEN:"
 echo -e "${YELLOW}   HF_TOKEN=your_huggingface_token${NC}"
 echo ""
 echo "2. Submit a training job:"
-echo -e "${YELLOW}   python submit_vertex_training.py${NC}"
+echo -e "${YELLOW}   python deployment/submit_vertex_training.py${NC}"
 echo ""
 echo "   Or override specific settings:"
-echo -e "${YELLOW}   python submit_vertex_training.py --epochs 5 --batch-size 32${NC}"
+echo -e "${YELLOW}   python deployment/submit_vertex_training.py --epochs 5 --batch-size 32${NC}"
+echo ""
+echo "3. Submit a sampling job (after training):"
+echo -e "${YELLOW}   python deployment/submit_vertex_sampling.py${NC}"
+echo ""
+echo "   Or with specific settings:"
+echo -e "${YELLOW}   python deployment/submit_vertex_sampling.py --num-samples 10 --sample-mode guided_sample${NC}"
 echo ""
 echo "Configuration is now managed through .env file!"
 echo "See .env.example for all available options."
