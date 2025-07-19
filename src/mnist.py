@@ -116,7 +116,10 @@ def sample_images(model: nn.Module, device: str, epoch: int,
             with open(tmp.name, "rb") as f:
                 image_bytes = f.read()
             
-            sample_path = samples_dir / f"epoch_{epoch:03d}.png"
+            if isinstance(samples_dir, str):
+                sample_path = f"{samples_dir}/epoch_{epoch:03d}.png"
+            else:
+                sample_path = samples_dir / f"epoch_{epoch:03d}.png"
             save_samples(image_bytes, sample_path, mode="wb")
             os.unlink(tmp.name)
             
@@ -199,7 +202,10 @@ def sample(model: nn.Module, device: str, n_samples=25, ckpt_path="ckpt.pth", ou
             with open(tmp.name, "rb") as f:
                 image_bytes = f.read()
             
-            sample_path = samples_dir / "samples.png"
+            if isinstance(samples_dir, str):
+                sample_path = f"{samples_dir}/samples.png"
+            else:
+                sample_path = samples_dir / "samples.png"
             save_samples(image_bytes, sample_path, mode="wb")
             os.unlink(tmp.name)
             

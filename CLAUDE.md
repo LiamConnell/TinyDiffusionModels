@@ -39,19 +39,24 @@ uv run python -m src.shakespeare.py --guided_sample
 
 ### Vertex AI Deployment
 
-#### Deploy Jobs (Zero Configuration Required)
+**IMPORTANT**: By default, deployment builds a fresh Docker container with the latest code to ensure deployments use current fixes. Use `--no-build` only when you're certain the existing container is up to date.
+
+#### Deploy Jobs (Automatic Container Build)
 ```bash
-# Train text diffusion
+# Train text diffusion (builds container with latest code)
 uv run python deployment/deploy.py shakespeare-training
 
-# Sample text diffusion  
+# Sample text diffusion (builds container with latest code)
 uv run python deployment/deploy.py shakespeare-sampling
 
-# Train image diffusion
+# Train image diffusion (builds container with latest code)
 uv run python deployment/deploy.py mnist-training
 
-# Sample image diffusion
+# Sample image diffusion (builds container with latest code)
 uv run python deployment/deploy.py mnist-sampling
+
+# Skip container build (use existing container - faster but may have stale code)
+uv run python deployment/deploy.py shakespeare-sampling --no-build
 ```
 
 #### Monitor Jobs
@@ -161,10 +166,19 @@ Edit files in `deployment/configs/` directly based on natural language requests:
 - `mnist-sampling.yaml` - image diffusion sampling config
 
 ### Job Operations
-- **Submit**: `uv run python deployment/deploy.py JOB_TYPE`
+- **Submit**: `uv run python deployment/deploy.py JOB_TYPE` (builds fresh container)
+- **Submit (no build)**: `uv run python deployment/deploy.py JOB_TYPE --no-build` (uses existing container)
 - **Monitor**: `uv run python deployment/monitor.py JOB_ID`
 - **Get Logs**: `uv run python deployment/monitor.py JOB_ID --logs`
 - **Full Details**: `uv run python deployment/monitor.py JOB_ID --full`
+
+### Container Build Process
+- **Default Behavior**: Every deployment builds and pushes a fresh Docker container with the latest source code
+- **Why This Matters**: Ensures deployments always use current bug fixes and code changes
+- **Build Steps**: 
+  1. `docker build -t gcr.io/learnagentspace/text-diffusion:latest .`
+  2. `docker push gcr.io/learnagentspace/text-diffusion:latest`
+- **Skip Building**: Use `--no-build` flag for faster deployment when container is already up to date
 
 ### Common Config Changes
 - **Machine type**: Edit `machineType` field (e.g., `n1-standard-4`, `n1-highmem-8`)

@@ -7,7 +7,7 @@ workerPoolSpecs:
   containerSpec:
     imageUri: "gcr.io/learnagentspace/text-diffusion:latest"
     command: ["python", "-m", "src.shakespeare"]
-    args: ["--train", "--epochs", "10", "--batch_size", "32", "--ckpt", "gs://text-diffusion/diffusion/checkpoints/text-model.pth"]
+    args: ["--train", "--epochs", "10", "--batch_size", "32", "--ckpt", "gs://text-diffusion/diffusion/outputs/model/text-model.pth]
 baseOutputDirectory:
   outputUriPrefix: "gs://text-diffusion/diffusion/outputs"
 enableWebAccess: false

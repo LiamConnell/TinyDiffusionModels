@@ -119,10 +119,9 @@ def train(
     save_checkpoint(model.state_dict(), ckpt_path)
 
 def p_sample(model, x, t):
-    device = x.device
-    beta_t = betas[t].to(device).view(-1, 1, 1)
-    sqrt_one_minus = sqrt_one_minus_alphas_cumprod[t].to(device).view(-1, 1, 1)
-    sqrt_recip_alpha = (1.0 / torch.sqrt(alphas[t].to(device))).view(-1, 1, 1)
+    beta_t = betas[t].view(-1, 1, 1)
+    sqrt_one_minus = sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1)
+    sqrt_recip_alpha = (1.0 / torch.sqrt(alphas[t])).view(-1, 1, 1)
 
     model_mean = sqrt_recip_alpha * (x - beta_t / sqrt_one_minus * model(x, t))
     if t[0] == 0:
@@ -155,7 +154,7 @@ def sample(
         
         for i, text in enumerate(texts):
             print(text)
-            sample_path = samples_dir / f"sample_{i}.txt"
+            sample_path = Path(samples_dir) / f"sample_{i}.txt"
             save_samples(text, sample_path)
             print(f"✔ Wrote {sample_path}")
         
@@ -221,6 +220,9 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
+    betas = betas.to(device)
+    alphas = alphas.to(device)
+    alphas_cumprod = alphas_cumprod.to(device)
     sqrt_alphas_cumprod = sqrt_alphas_cumprod.to(device)
     sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.to(device)
 
@@ -247,7 +249,7 @@ if __name__ == "__main__":
         texts = guided_generate(lm_model, tokenizer, embed_matrix, z, alpha=args.alpha, max_len=args.seq_len)
         samples_dir = get_samples_dir("samples")
         for i, text in enumerate(texts):
-            sample_path = samples_dir / f"guided_sample_{i}.txt"
+            sample_path = Path(samples_dir) / f"guided_sample_{i}.txt"
             save_samples(text, sample_path)
             print(f"✔ Wrote {sample_path}")
 

@@ -98,6 +98,7 @@ def save_samples(content: Union[str, bytes], sample_path: Union[str, Path],
                 else:
                     tmp.write(content)
                 tmp.flush()
+                tmp.close()  # Explicitly close file before upload
                 print(f"Uploading sample to GCS: {sample_path}")
                 upload_to_gcs(tmp.name, sample_path)
                 print(f"✔ Uploaded sample to {sample_path}")
@@ -123,15 +124,15 @@ def get_vertex_checkpoint_path(base_name: str) -> str:
     return base_name
 
 
-def get_samples_dir(base_dir: str = "samples") -> Path:
+def get_samples_dir(base_dir: str = "samples") -> Union[str, Path]:
     """Get samples directory path, supporting both local and cloud storage."""
     if "AIP_MODEL_DIR" in os.environ:
         # In Vertex AI, save samples to cloud storage
         model_dir = os.environ["AIP_MODEL_DIR"]
-        # Convert gs://bucket/path/model to gs://bucket/path/outputs/samples
+        # AIP_MODEL_DIR is already the outputs directory, so just append base_dir
         if model_dir.startswith("gs://"):
-            base_path = model_dir.rsplit("/", 1)[0]  # Remove the last component (model)
-            return Path(f"{base_path}/outputs/{base_dir}")
+            # Return string for GCS paths to avoid Path normalization issues
+            return f"{model_dir}/{base_dir}"
         else:
-            return Path(model_dir).parent / "outputs" / base_dir
+            return Path(model_dir) / base_dir
     return Path(base_dir)

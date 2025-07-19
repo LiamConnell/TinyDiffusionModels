@@ -10,8 +10,47 @@ import json
 import sys
 from pathlib import Path
 
-def deploy_job(job_type: str):
+def build_container():
+    """Build and push the Docker container with latest code"""
+    
+    print("🔨 Building Docker container...")
+    
+    # Build container
+    build_cmd = [
+        "docker", "build", 
+        "-t", "gcr.io/learnagentspace/text-diffusion:latest",
+        "."
+    ]
+    
+    try:
+        print(f"Running: {' '.join(build_cmd)}")
+        result = subprocess.run(build_cmd, check=True)
+        print("✅ Container built successfully!")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error building container: {e}")
+        sys.exit(1)
+    
+    # Push container
+    print("📤 Pushing container to registry...")
+    push_cmd = [
+        "docker", "push", 
+        "gcr.io/learnagentspace/text-diffusion:latest"
+    ]
+    
+    try:
+        print(f"Running: {' '.join(push_cmd)}")
+        result = subprocess.run(push_cmd, check=True)
+        print("✅ Container pushed successfully!")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error pushing container: {e}")
+        sys.exit(1)
+
+def deploy_job(job_type: str, build: bool = True):
     """Deploy a predefined job configuration"""
+    
+    # Build container with latest code if requested
+    if build:
+        build_container()
     
     # Use config directly (no substitutions needed)
     config_path = Path(__file__).parent / "configs" / f"{job_type}.yaml"
@@ -57,10 +96,12 @@ def main():
         "shakespeare-training", "shakespeare-sampling", 
         "mnist-training", "mnist-sampling"
     ], help="Type of job to deploy")
+    parser.add_argument("--no-build", action="store_true", 
+                       help="Skip building and pushing the Docker container")
     
     args = parser.parse_args()
     
-    job_id = deploy_job(args.job_type)
+    job_id = deploy_job(args.job_type, build=not args.no_build)
     print(f"\n💡 To monitor this job, run:")
     print(f"   uv run python deployment/monitor.py {job_id}")
     print(f"   uv run python deployment/monitor.py {job_id} --logs")
