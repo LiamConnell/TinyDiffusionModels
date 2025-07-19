@@ -154,7 +154,11 @@ def sample(
         
         for i, text in enumerate(texts):
             print(text)
-            sample_path = Path(samples_dir) / f"sample_{i}.txt"
+            # Use string concatenation for GCS paths to avoid Path() corruption
+            if isinstance(samples_dir, str) and samples_dir.startswith("gs://"):
+                sample_path = f"{samples_dir}/sample_{i}.txt"
+            else:
+                sample_path = Path(samples_dir) / f"sample_{i}.txt"
             save_samples(text, sample_path)
             print(f"✔ Wrote {sample_path}")
         
@@ -249,7 +253,11 @@ if __name__ == "__main__":
         texts = guided_generate(lm_model, tokenizer, embed_matrix, z, alpha=args.alpha, max_len=args.seq_len)
         samples_dir = get_samples_dir("samples")
         for i, text in enumerate(texts):
-            sample_path = Path(samples_dir) / f"guided_sample_{i}.txt"
+            # Use string concatenation for GCS paths to avoid Path() corruption
+            if isinstance(samples_dir, str) and samples_dir.startswith("gs://"):
+                sample_path = f"{samples_dir}/guided_sample_{i}.txt"
+            else:
+                sample_path = Path(samples_dir) / f"guided_sample_{i}.txt"
             save_samples(text, sample_path)
             print(f"✔ Wrote {sample_path}")
 
