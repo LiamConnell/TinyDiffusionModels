@@ -57,7 +57,7 @@ class LearnedEmbedding(nn.Module):
             # Initialize with pre-trained embeddings if provided
             if pretrained_embeddings.size(1) != embed_dim:
                 # Project to desired dimension if different
-                projection = nn.Linear(pretrained_embeddings.size(1), embed_dim, bias=False)
+                projection = nn.Linear(pretrained_embeddings.size(1), embed_dim, bias=False).to(pretrained_embeddings.device)
                 with torch.no_grad():
                     projected = projection(pretrained_embeddings)
                     self.embeddings.weight.copy_(projected)
