@@ -132,7 +132,10 @@ def get_samples_dir(base_dir: str = "samples") -> Union[str, Path]:
         # AIP_MODEL_DIR is already the outputs directory, so just append base_dir
         if model_dir.startswith("gs://"):
             # Return string for GCS paths to avoid Path normalization issues
-            return f"{model_dir.rstrip('/')}/{base_dir}"
+            # Strip trailing slashes and ensure clean path construction
+            clean_model_dir = model_dir.rstrip('/')
+            clean_base_dir = base_dir.strip('/')
+            return f"{clean_model_dir}/{clean_base_dir}"
         else:
             return Path(model_dir) / base_dir
     return Path(base_dir)

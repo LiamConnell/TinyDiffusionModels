@@ -7,7 +7,7 @@ workerPoolSpecs:
   containerSpec:
     imageUri: "gcr.io/learnagentspace/text-diffusion:latest"
     command: ["python", "-m", "src.mnist"]
-    args: ["--train", "--epochs", "100", "--batch_size", "64", "--ckpt", "gs://text-diffusion/diffusion/outputs/model/image-model.pth"]
+    args: ["--train", "--epochs", "1000", "--batch_size", "64", "--ckpt", "gs://text-diffusion/diffusion/outputs/model/image-model.pth"]
 baseOutputDirectory:
   outputUriPrefix: "gs://text-diffusion/diffusion/outputs"
 enableWebAccess: false

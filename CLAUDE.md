@@ -213,3 +213,16 @@ uv run python deployment/monitor.py 12345 --logs
 # - Then resubmit the job
 uv run python deployment/deploy.py shakespeare-training
 ```
+
+## Experiment Issues
+
+Issues labeled `experiment` document training runs and experimental configurations. They should include:
+- Job ID and monitoring commands
+- Complete deployment configuration (epochs, batch size, machine type)  
+- Git commit hash for reproducibility
+- Expected outcome and current status
+
+## GitHub Issue Management
+
+- Usually when I refer to an issue, I mean a github issue. Creating an issue, investigating/fixing an issue, etc. 
+- Be sure to always read the comments of the issue because a lot of important context can be there.

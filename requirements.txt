@@ -11,3 +11,5 @@ transformers
 google-cloud-storage
 
 anypath
+
+pytest
