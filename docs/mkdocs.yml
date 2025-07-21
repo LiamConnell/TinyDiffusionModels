@@ -1,6 +1,6 @@
 site_name: TextDiffusion
-site_url: https://liamconnell.github.io/text-diffusion
-repo_url: https://github.com/liamconnell/text-diffusion
+site_url: https://liamconnell.github.io/TinyDiffusionModels
+repo_url: https://github.com/liamconnell/TinyDiffusionModels
 
 plugins:
   - search
