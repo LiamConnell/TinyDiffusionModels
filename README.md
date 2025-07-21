@@ -1,5 +1,7 @@
 # TextDiffusion
 
+[Project Writeup and Experiment Log](https://liamconnell.github.io/TinyDiffusionModels/)
+
 Implementation of diffusion models for both images and text. Image diffusion uses standard DDPM on MNIST digits. Text diffusion is experimental, operating in embedding space with both pure diffusion and guided generation modes.
 
 ## Setup
