@@ -1,13 +1,13 @@
 workerPoolSpecs:
 - machineSpec:
-    machineType: "n1-highmem-8"
-    acceleratorType: "NVIDIA_TESLA_T4"
+    machineType: "n1-standard-8"
+    acceleratorType: "NVIDIA_TESLA_V100"
     acceleratorCount: 1
   replicaCount: 1
   containerSpec:
     imageUri: "gcr.io/learnagentspace/text-diffusion:latest"
     command: ["python", "-m", "src.shakespeare"]
-    args: ["--train", "--epochs", "10000", "--batch_size", "32", "--ckpt", "gs://text-diffusion/diffusion/outputs/model/text-model.pth"]
+    args: ["--train", "--epochs", "100", "--batch_size", "8", "--embed_dim", "256", "--use_learned_embeddings", "--init_from_pretrained", "--ckpt", "gs://text-diffusion/diffusion/outputs/model/text-model.pth"]
 baseOutputDirectory:
   outputUriPrefix: "gs://text-diffusion/diffusion/outputs"
 enableWebAccess: false

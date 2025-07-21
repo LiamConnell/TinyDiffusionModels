@@ -226,3 +226,8 @@ Issues labeled `experiment` document training runs and experimental configuratio
 
 - Usually when I refer to an issue, I mean a github issue. Creating an issue, investigating/fixing an issue, etc. 
 - Be sure to always read the comments of the issue because a lot of important context can be there.
+
+## Documentation and Experiment Tracking
+
+- I use mkdocs to document the project and research in the docs/ directory. 
+- I have an experiment journal where I write entries in a blog style. An example entry is `docs/docs/experiments/posts/2025-07-18-mnist-baseline.md`.

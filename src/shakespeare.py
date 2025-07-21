@@ -43,6 +43,65 @@ def q_sample(x0: torch.Tensor, t: torch.Tensor, noise=None):
     sqrt_om = sqrt_one_minus_alphas_cumprod[t].to(device).view(b, 1, 1)
     return sqrt_acp * x0 + sqrt_om * noise
 
+class LearnedEmbedding(nn.Module):
+    """Custom learnable embedding space for diffusion."""
+    def __init__(self, vocab_size, embed_dim, pretrained_embeddings=None):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        
+        # Initialize embedding matrix
+        self.embeddings = nn.Embedding(vocab_size, embed_dim)
+        
+        if pretrained_embeddings is not None:
+            # Initialize with pre-trained embeddings if provided
+            if pretrained_embeddings.size(1) != embed_dim:
+                # Project to desired dimension if different
+                projection = nn.Linear(pretrained_embeddings.size(1), embed_dim, bias=False).to(pretrained_embeddings.device)
+                with torch.no_grad():
+                    projected = projection(pretrained_embeddings)
+                    self.embeddings.weight.copy_(projected)
+            else:
+                # Use pre-trained embeddings directly
+                self.embeddings.weight.data.copy_(pretrained_embeddings)
+        else:
+            # Random initialization
+            nn.init.normal_(self.embeddings.weight, mean=0.0, std=0.02)
+    
+    def forward(self, token_ids):
+        """Convert token IDs to embeddings.
+        
+        Args:
+            token_ids: (B, L) tensor of token indices
+            
+        Returns:
+            embeddings: (B, L, embed_dim) tensor of embeddings
+        """
+        return self.embeddings(token_ids)
+    
+    def get_embedding_matrix(self):
+        """Get the full embedding matrix for decoding."""
+        return self.embeddings.weight  # (vocab_size, embed_dim)
+
+
+class LearnedRounding(nn.Module):
+    """Learned rounding function to convert embeddings to token probabilities."""
+    def __init__(self, embed_dim, vocab_size):
+        super().__init__()
+        self.decoder = nn.Linear(embed_dim, vocab_size)
+    
+    def forward(self, embeddings):
+        """Convert embeddings to token logits.
+        
+        Args:
+            embeddings: (B, L, embed_dim)
+        
+        Returns:
+            logits: (B, L, vocab_size)
+        """
+        return self.decoder(embeddings)
+
+
 class TinyTransformer(nn.Module):
     def __init__(self, dim, n_heads=4, depth=3):
         super().__init__()
@@ -90,33 +149,70 @@ def tokenize_corpus(text: str, tokenizer, seq_len: int):
 
 def train(
     model,
-    embed_matrix,
+    rounding_fn,
+    embedding_fn,
     data_loader,
     device,
     ckpt_path="text_ckpt.pth",
     epochs=1,
     lr=1e-4,
+    rounding_weight=1.0,
+    use_learned_embeddings=True,
 ):
     
-    optim = torch.optim.AdamW(model.parameters(), lr=lr)
+    # Include embedding parameters in optimization if using learned embeddings
+    params = list(model.parameters()) + list(rounding_fn.parameters())
+    if use_learned_embeddings:
+        params += list(embedding_fn.parameters())
+    
+    optim = torch.optim.AdamW(params, lr=lr)
+    
     for epoch in range(epochs):
         pbar = tqdm(data_loader, desc=f"Epoch {epoch+1}/{epochs}")
         for token_ids in pbar:
             token_ids = token_ids.to(device)
-            x0 = embed_matrix[token_ids]  # (B, L, dim)
+            
+            # Get embeddings (either learned or pre-trained)
+            if use_learned_embeddings:
+                x0 = embedding_fn(token_ids)  # (B, L, dim)
+            else:
+                x0 = embedding_fn[token_ids]  # (B, L, dim) - direct indexing for pre-trained
+            
             t = torch.randint(0, T, (x0.shape[0],), device=device).long()
             noise = torch.randn_like(x0)
             x_noisy = q_sample(x0, t, noise)
             noise_pred = model(x_noisy, t)
-            loss = F.mse_loss(noise_pred, noise)
+            
+            # Diffusion loss (denoising objective)
+            diffusion_loss = F.mse_loss(noise_pred, noise)
+            
+            # Rounding loss (token prediction objective)
+            logits = rounding_fn(x0)  # (B, L, vocab_size)
+            rounding_loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), token_ids.reshape(-1))
+            
+            # Combined loss
+            total_loss = diffusion_loss + rounding_weight * rounding_loss
 
-            optim.zero_grad(); loss.backward(); optim.step()
-            pbar.set_postfix(loss=loss.item())
+            optim.zero_grad(); total_loss.backward(); optim.step()
+            pbar.set_postfix(
+                diff_loss=diffusion_loss.item(), 
+                round_loss=rounding_loss.item(), 
+                total=total_loss.item()
+            )
     
     ckpt_path = get_vertex_checkpoint_path("text-model.pth") if "AIP_MODEL_DIR" in os.environ else ckpt_path
 
     print(f"✔ Saving checkpoint to {ckpt_path}...")
-    save_checkpoint(model.state_dict(), ckpt_path)
+    checkpoint = {
+        'diffusion_model': model.state_dict(),
+        'rounding_fn': rounding_fn.state_dict()
+    }
+    
+    # Save embedding function if it's learned
+    if use_learned_embeddings:
+        checkpoint['embedding_fn'] = embedding_fn.state_dict()
+    
+    save_checkpoint(checkpoint, ckpt_path)
 
 def p_sample(model, x, t):
     beta_t = betas[t].view(-1, 1, 1)
@@ -132,24 +228,52 @@ def p_sample(model, x, t):
 
 def sample(
     model,
-    embed_matrix,
+    rounding_fn,
+    embedding_fn,
     tokenizer,
     device,
     n_samples=4,
     seq_len=128,
+    use_learned_rounding=True,
+    use_learned_embeddings=True,
+    embed_dim=None,
 ):
     model.eval()
+    rounding_fn.eval()
+    if use_learned_embeddings:
+        embedding_fn.eval()
+    
     samples_dir = get_samples_dir("samples")
     
     with torch.no_grad():
-        x = torch.randn(n_samples, seq_len, embed_matrix.shape[1], device=device)
+        # Determine embedding dimension
+        if embed_dim is None:
+            if use_learned_embeddings:
+                embed_dim = embedding_fn.embed_dim
+            else:
+                embed_dim = embedding_fn.shape[1]  # Pre-trained embedding matrix
+        
+        x = torch.randn(n_samples, seq_len, embed_dim, device=device)
         for i in tqdm(reversed(range(T)), desc="Sampling"):
             t = torch.full((n_samples,), i, device=device, dtype=torch.long)
             x = p_sample(model, x, t)
-        emb_norm = F.normalize(embed_matrix, dim=1)  # (V, dim)
-        x_norm = F.normalize(x, dim=2)               # (B, L, dim)
-        sims = torch.matmul(x_norm, emb_norm.T)      # (B, L, V)
-        tokens = sims.argmax(dim=-1)                 # (B, L)
+        
+        if use_learned_rounding:
+            # Use learned rounding function
+            logits = rounding_fn(x)  # (B, L, V)
+            tokens = logits.argmax(dim=-1)  # (B, L)
+        else:
+            # Fall back to cosine similarity (original method)
+            if use_learned_embeddings:
+                embed_matrix = embedding_fn.get_embedding_matrix()  # (V, dim)
+            else:
+                embed_matrix = embedding_fn  # Pre-trained embedding matrix
+            
+            emb_norm = F.normalize(embed_matrix, dim=1)  # (V, dim)
+            x_norm = F.normalize(x, dim=2)               # (B, L, dim)
+            sims = torch.matmul(x_norm, emb_norm.T)      # (B, L, V)
+            tokens = sims.argmax(dim=-1)                 # (B, L)
+        
         texts = tokenizer.batch_decode(tokens, skip_special_tokens=True)
         
         for i, text in enumerate(texts):
@@ -178,12 +302,15 @@ def sample_diffusion_embeddings(model, embed_dim, device, n, seq_len):
 
 def guided_generate(
     base_lm: nn.Module,
+    rounding_fn: nn.Module,
     tokenizer,
-    embed_matrix: torch.Tensor,
+    embedding_fn,
     diff_z: torch.Tensor,
     alpha: float = 0.5,
     max_len: int = 128,
     temperature: float = 1.0,
+    use_learned_rounding: bool = True,
+    use_learned_embeddings: bool = True,
 ):
     """One batch (size = diff_z.size(0)) of guided generation."""
 
@@ -191,14 +318,24 @@ def guided_generate(
     B, L, dim = diff_z.shape
     input_ids = torch.full((B, 1), tokenizer.bos_token_id or tokenizer.eos_token_id, device=device, dtype=torch.long)
 
-    emb_norm = F.normalize(embed_matrix, dim=1)             # (V,dim)
-
     for pos in range(L):
         outputs = base_lm(input_ids)
         ar_logits = outputs.logits[:, -1, :] / temperature   # (B,V)
 
-        z_norm = F.normalize(diff_z[:, pos, :], dim=1)       # (B,dim)
-        diff_logits = torch.matmul(z_norm, emb_norm.T) / temperature  # (B,V)
+        if use_learned_rounding:
+            # Use learned rounding function for diffusion logits
+            z_pos = diff_z[:, pos:pos+1, :]  # (B, 1, dim)
+            diff_logits = rounding_fn(z_pos).squeeze(1) / temperature  # (B, V)
+        else:
+            # Fall back to cosine similarity
+            if use_learned_embeddings:
+                embed_matrix = embedding_fn.get_embedding_matrix()  # (V, dim)
+            else:
+                embed_matrix = embedding_fn  # Pre-trained embedding matrix
+            
+            emb_norm = F.normalize(embed_matrix, dim=1)             # (V,dim)
+            z_norm = F.normalize(diff_z[:, pos, :], dim=1)       # (B,dim)
+            diff_logits = torch.matmul(z_norm, emb_norm.T) / temperature  # (B,V)
 
         mixed_logits = (1 - alpha) * ar_logits + alpha * diff_logits
         next_id = torch.argmax(mixed_logits, dim=-1, keepdim=True)    # greedy
@@ -219,6 +356,11 @@ if __name__ == "__main__":
     parser.add_argument("--model_id", type=str, default="google/gemma-2b-it")
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--alpha", type=float, default=0.3)
+    parser.add_argument("--rounding_weight", type=float, default=1.0, help="Weight for learned rounding loss")
+    parser.add_argument("--use_cosine_fallback", action="store_true", help="Use cosine similarity instead of learned rounding")
+    parser.add_argument("--use_learned_embeddings", action="store_true", help="Use custom learned embedding space")
+    parser.add_argument("--embed_dim", type=int, default=None, help="Custom embedding dimension (uses pre-trained dim if not specified)")
+    parser.add_argument("--init_from_pretrained", action="store_true", help="Initialize learned embeddings from pre-trained weights")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -232,25 +374,85 @@ if __name__ == "__main__":
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     lm_model = AutoModelForCausalLM.from_pretrained(args.model_id).to(device)
-    embed_matrix = lm_model.get_input_embeddings().weight.detach().to(device)
-    dim = embed_matrix.size(1)
+    pretrained_embed_matrix = lm_model.get_input_embeddings().weight.detach().to(device)
+    pretrained_dim = pretrained_embed_matrix.size(1)
+    vocab_size = pretrained_embed_matrix.size(0)
 
-    diff_model = TinyTransformer(dim).to(device)
+    # Determine embedding configuration
+    if args.use_learned_embeddings:
+        embed_dim = args.embed_dim if args.embed_dim is not None else pretrained_dim
+        init_embeddings = pretrained_embed_matrix if args.init_from_pretrained else None
+        embedding_fn = LearnedEmbedding(vocab_size, embed_dim, init_embeddings).to(device)
+        print(f"Using learned embeddings (dim={embed_dim}, init_from_pretrained={args.init_from_pretrained})")
+    else:
+        embed_dim = pretrained_dim
+        embedding_fn = pretrained_embed_matrix  # Direct tensor for indexing
+        print(f"Using pre-trained embeddings (dim={embed_dim})")
+
+    diff_model = TinyTransformer(embed_dim).to(device)
+    rounding_fn = LearnedRounding(embed_dim, vocab_size).to(device)
 
     if args.train:
         raw = load_text_dataset()
         chunks = tokenize_corpus(raw, tokenizer, args.seq_len)
         dl = DataLoader(chunks, batch_size=args.batch_size, shuffle=True)
-        train(diff_model, embed_matrix, dl, device, args.ckpt, epochs=args.epochs)
+        train(diff_model, rounding_fn, embedding_fn, dl, device, args.ckpt, 
+              epochs=args.epochs, rounding_weight=args.rounding_weight, 
+              use_learned_embeddings=args.use_learned_embeddings)
 
     if args.sample:
-        diff_model.load_state_dict(load_checkpoint(args.ckpt, device))
-        texts = sample(diff_model, embed_matrix, tokenizer, device, args.n, args.seq_len)
+        checkpoint = load_checkpoint(args.ckpt, device)
+        if isinstance(checkpoint, dict) and 'diffusion_model' in checkpoint:
+            # New checkpoint format with multiple models
+            diff_model.load_state_dict(checkpoint['diffusion_model'])
+            rounding_fn.load_state_dict(checkpoint['rounding_fn'])
+            
+            # Load embedding function if available
+            if args.use_learned_embeddings and 'embedding_fn' in checkpoint:
+                embedding_fn.load_state_dict(checkpoint['embedding_fn'])
+            elif args.use_learned_embeddings and 'embedding_fn' not in checkpoint:
+                print("Warning: Learned embeddings requested but not found in checkpoint. Using pre-trained fallback.")
+                args.use_learned_embeddings = False
+                embedding_fn = pretrained_embed_matrix
+        else:
+            # Old checkpoint format (diffusion model only)
+            diff_model.load_state_dict(checkpoint)
+            print("Warning: Using old checkpoint format. Falling back to pre-trained embeddings and cosine similarity.")
+            args.use_cosine_fallback = True
+            args.use_learned_embeddings = False
+            embedding_fn = pretrained_embed_matrix
+        
+        texts = sample(diff_model, rounding_fn, embedding_fn, tokenizer, device, 
+                      args.n, args.seq_len, use_learned_rounding=not args.use_cosine_fallback,
+                      use_learned_embeddings=args.use_learned_embeddings, embed_dim=embed_dim)
 
     if args.guided_sample:
-        diff_model.load_state_dict(load_checkpoint(args.ckpt, device))
-        z = sample_diffusion_embeddings(diff_model, dim, device, args.n, args.seq_len)
-        texts = guided_generate(lm_model, tokenizer, embed_matrix, z, alpha=args.alpha, max_len=args.seq_len)
+        checkpoint = load_checkpoint(args.ckpt, device)
+        if isinstance(checkpoint, dict) and 'diffusion_model' in checkpoint:
+            # New checkpoint format with multiple models
+            diff_model.load_state_dict(checkpoint['diffusion_model'])
+            rounding_fn.load_state_dict(checkpoint['rounding_fn'])
+            
+            # Load embedding function if available
+            if args.use_learned_embeddings and 'embedding_fn' in checkpoint:
+                embedding_fn.load_state_dict(checkpoint['embedding_fn'])
+            elif args.use_learned_embeddings and 'embedding_fn' not in checkpoint:
+                print("Warning: Learned embeddings requested but not found in checkpoint. Using pre-trained fallback.")
+                args.use_learned_embeddings = False
+                embedding_fn = pretrained_embed_matrix
+        else:
+            # Old checkpoint format (diffusion model only)
+            diff_model.load_state_dict(checkpoint)
+            print("Warning: Using old checkpoint format. Falling back to pre-trained embeddings and cosine similarity.")
+            args.use_cosine_fallback = True
+            args.use_learned_embeddings = False
+            embedding_fn = pretrained_embed_matrix
+            
+        z = sample_diffusion_embeddings(diff_model, embed_dim, device, args.n, args.seq_len)
+        texts = guided_generate(lm_model, rounding_fn, tokenizer, embedding_fn, z, 
+                               alpha=args.alpha, max_len=args.seq_len, 
+                               use_learned_rounding=not args.use_cosine_fallback,
+                               use_learned_embeddings=args.use_learned_embeddings)
         samples_dir = get_samples_dir("samples")
         for i, text in enumerate(texts):
             # Use string concatenation for GCS paths to avoid Path() corruption
