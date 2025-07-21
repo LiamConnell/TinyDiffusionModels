@@ -1,0 +1,43 @@
+site_name: TextDiffusion
+site_url: https://liamconnell.github.io/text-diffusion
+repo_url: https://github.com/liamconnell/text-diffusion
+
+plugins:
+  - search
+  - blog:
+      blog_dir: experiments
+
+nav:
+  - Home: index.md
+  - Experiments:
+    - experiments/index.md
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - search.highlight
+    - search.share
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
