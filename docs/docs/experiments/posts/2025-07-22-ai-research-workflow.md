@@ -36,16 +36,13 @@ graph TD
     C --> D[Phase 3: Implementation]
     D --> E[Phase 4: Experimentation]
     E --> F[Phase 5: Analysis & Iteration]
-    F --> G{Success?}
-    G -->|No| C
-    G -->|Yes| H[Complete]
+
     
     %% Artifacts
     B --> I1[📋 GitHub Issue<br/>Problem Analysis]
     C --> I2[📋 GitHub Issue<br/>Solution Roadmap]
     D --> P1[🔀 Pull Request<br/>Implementation]
     E --> I3[📋 GitHub Issue<br/>Experiment Tracking]
-    E --> J1[🔄 Real-time Monitoring<br/>Job Status Updates]
     F --> E1[📝 Experiment Post<br/>Results & Analysis]
     
     %% Styling
