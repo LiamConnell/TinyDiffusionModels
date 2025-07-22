@@ -144,3 +144,24 @@ Generated Shakespeare-style text with appropriate vocabulary ("ITis", "withal", 
 - [#15 - Extended Training Strategy](https://github.com/LiamConnell/TinyDiffusionModels/issues/15)
 
 **Related PR**: [#13 - Implementation](https://github.com/LiamConnell/TinyDiffusionModels/pull/13)
+
+---
+
+## Post-Hoc Analysis (2025-07-22)
+
+Following the successful 1000-epoch training run from Issue #17, a new sampling job (`1645655082110287872`) was executed to evaluate the model's performance.
+
+### Findings: Severe Quality Degradation
+
+The generated samples (`samples/v2/`) show a catastrophic failure in text generation quality. The output consists almost exclusively of punctuation (commas, colons) and a single instance of the word "him".
+
+**Sample Output (`sample_0.txt`):**
+```
+:::,:,,:,,,::,:,::::,::,,::
+,,,,,,,,,:::,:,:,::, him:,,,'::,,,,:
+,:
+```
+
+### Analysis
+
+This outcome suggests that despite the training job reporting success and low loss values, the model has experienced a form of mode collapse. Instead of learning the nuances of the Shakespearean language, it has overfit to generating punctuation, which likely constitutes a significant portion of the training data's token distribution. The extended training appears to have exacerbated this issue, leading to a complete loss of meaningful text generation capabilities. This marks a significant regression from the 100-epoch baseline.
