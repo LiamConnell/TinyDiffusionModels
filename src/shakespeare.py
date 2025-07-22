@@ -171,6 +171,60 @@ def dynamic_rounding_weight_schedule(epoch, total_epochs, initial_weight=1.0, fi
     progress = epoch / total_epochs
     return initial_weight * (1 - progress) + final_weight * progress
 
+
+def constant_rounding_weight_schedule(epoch, total_epochs, weight=0.4):
+    """Keep rounding weight constant throughout training to prevent embedding space collapse.
+    
+    Based on DiffusionLM research: maintaining consistent rounding loss prevents
+    embedding space collapse during extended training.
+    """
+    return weight
+
+
+def anchor_loss(predicted_embeddings, target_embeddings, alpha=0.1):
+    """Anchor loss to prevent embedding space collapse.
+    
+    Creates stronger connection between denoised embeddings and ground truth embeddings.
+    Based on DiffusionLM paper: prevents token embeddings from becoming indistinguishable.
+    
+    Args:
+        predicted_embeddings: (B, L, embed_dim) - model predicted embeddings 
+        target_embeddings: (B, L, embed_dim) - ground truth embeddings
+        alpha: loss weighting factor
+        
+    Returns:
+        anchor_loss: scalar loss value
+    """
+    return alpha * F.mse_loss(predicted_embeddings, target_embeddings)
+
+
+def embedding_anisotropy_score(embeddings):
+    """Measure embedding space collapse using self-similarity anisotropy.
+    
+    Higher scores indicate better embedding diversity (less collapse).
+    Based on DiffusionLM research for monitoring embedding space health.
+    
+    Args:
+        embeddings: (vocab_size, embed_dim) or (B, L, embed_dim)
+        
+    Returns:
+        anisotropy_score: scalar indicating embedding diversity
+    """
+    if embeddings.dim() == 3:
+        # Flatten batch and sequence dimensions
+        embeddings = embeddings.view(-1, embeddings.size(-1))
+    
+    # Compute pairwise cosine similarities
+    normalized = F.normalize(embeddings, p=2, dim=1)
+    similarity_matrix = torch.mm(normalized, normalized.t())
+    
+    # Remove self-similarities (diagonal)
+    mask = ~torch.eye(similarity_matrix.size(0), dtype=torch.bool, device=embeddings.device)
+    similarities = similarity_matrix[mask]
+    
+    # Anisotropy = variance of similarities (higher = more diverse)
+    return similarities.var().item()
+
 def train(
     model,
     rounding_fn,
@@ -187,6 +241,8 @@ def train(
     patience=5,
     use_lr_scheduling=True,
     warmup_steps=100,
+    anchor_weight=0.1,
+    constant_rounding_weight=False,
 ):
     
     # Include embedding parameters in optimization if using learned embeddings
@@ -212,10 +268,13 @@ def train(
         if use_learned_embeddings:
             embedding_fn.train()
         
-        # Dynamic rounding weight scheduling
-        current_rounding_weight = dynamic_rounding_weight_schedule(epoch, epochs, rounding_weight)
+        # Rounding weight scheduling (constant or dynamic based on flag)
+        if constant_rounding_weight:
+            current_rounding_weight = constant_rounding_weight_schedule(epoch, epochs, rounding_weight)
+        else:
+            current_rounding_weight = dynamic_rounding_weight_schedule(epoch, epochs, rounding_weight)
         
-        train_losses = {'diff': 0, 'round': 0, 'total': 0}
+        train_losses = {'diff': 0, 'round': 0, 'anchor': 0, 'total': 0}
         pbar = tqdm(data_loader, desc=f"Epoch {epoch+1}/{epochs} (Train)")
         
         for step, token_ids in enumerate(pbar):
@@ -239,8 +298,16 @@ def train(
             logits = rounding_fn(x0)  # (B, L, vocab_size)
             rounding_loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), token_ids.reshape(-1))
             
-            # Combined loss with dynamic weighting
-            total_loss = diffusion_loss + current_rounding_weight * rounding_loss
+            # Anchor loss to prevent embedding space collapse
+            if use_learned_embeddings and anchor_weight > 0:
+                # Reconstruct embeddings from denoised prediction
+                predicted_x0 = (x_noisy - sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1) * noise_pred) / sqrt_alphas_cumprod[t].view(-1, 1, 1)
+                anchor_loss_val = anchor_loss(predicted_x0, x0, anchor_weight)
+            else:
+                anchor_loss_val = torch.tensor(0.0, device=device)
+            
+            # Combined loss with dynamic weighting and anchor loss
+            total_loss = diffusion_loss + current_rounding_weight * rounding_loss + anchor_loss_val
 
             optim.zero_grad()
             total_loss.backward()
@@ -252,11 +319,13 @@ def train(
             # Track losses
             train_losses['diff'] += diffusion_loss.item()
             train_losses['round'] += rounding_loss.item()
+            train_losses['anchor'] += anchor_loss_val.item()
             train_losses['total'] += total_loss.item()
             
             pbar.set_postfix(
                 diff_loss=diffusion_loss.item(), 
-                round_loss=rounding_loss.item(), 
+                round_loss=rounding_loss.item(),
+                anchor_loss=anchor_loss_val.item(), 
                 total=total_loss.item(),
                 rw=current_rounding_weight,
                 lr=optim.param_groups[0]['lr']
@@ -268,7 +337,7 @@ def train(
         if use_learned_embeddings:
             embedding_fn.eval()
         
-        val_losses = {'diff': 0, 'round': 0, 'total': 0}
+        val_losses = {'diff': 0, 'round': 0, 'anchor': 0, 'total': 0}
         with torch.no_grad():
             for token_ids in tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} (Val)"):
                 token_ids = token_ids.to(device)
@@ -286,10 +355,19 @@ def train(
                 diffusion_loss = F.mse_loss(noise_pred, noise)
                 logits = rounding_fn(x0)
                 rounding_loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), token_ids.reshape(-1))
-                total_loss = diffusion_loss + current_rounding_weight * rounding_loss
+                
+                # Anchor loss for validation
+                if use_learned_embeddings and anchor_weight > 0:
+                    predicted_x0 = (x_noisy - sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1) * noise_pred) / sqrt_alphas_cumprod[t].view(-1, 1, 1)
+                    anchor_loss_val = anchor_loss(predicted_x0, x0, anchor_weight)
+                else:
+                    anchor_loss_val = torch.tensor(0.0, device=device)
+                
+                total_loss = diffusion_loss + current_rounding_weight * rounding_loss + anchor_loss_val
                 
                 val_losses['diff'] += diffusion_loss.item()
                 val_losses['round'] += rounding_loss.item()
+                val_losses['anchor'] += anchor_loss_val.item()
                 val_losses['total'] += total_loss.item()
         
         # Average losses
@@ -298,9 +376,15 @@ def train(
             val_losses[key] /= len(val_loader)
         
         print(f"Epoch {epoch+1}/{epochs}:")
-        print(f"  Train: diff={train_losses['diff']:.4f}, round={train_losses['round']:.4f}, total={train_losses['total']:.4f}")
-        print(f"  Val:   diff={val_losses['diff']:.4f}, round={val_losses['round']:.4f}, total={val_losses['total']:.4f}")
+        print(f"  Train: diff={train_losses['diff']:.4f}, round={train_losses['round']:.4f}, anchor={train_losses['anchor']:.4f}, total={train_losses['total']:.4f}")
+        print(f"  Val:   diff={val_losses['diff']:.4f}, round={val_losses['round']:.4f}, anchor={val_losses['anchor']:.4f}, total={val_losses['total']:.4f}")
         print(f"  Rounding weight: {current_rounding_weight:.3f}")
+        
+        # Log embedding space health if using learned embeddings
+        if use_learned_embeddings and epoch % 10 == 0:  # Every 10 epochs
+            embedding_matrix = embedding_fn.get_embedding_matrix()
+            anisotropy = embedding_anisotropy_score(embedding_matrix)
+            print(f"  Embedding anisotropy: {anisotropy:.4f}")
         
         # Early stopping check
         if val_losses['total'] < best_val_loss:
@@ -483,6 +567,8 @@ if __name__ == "__main__":
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--alpha", type=float, default=0.3)
     parser.add_argument("--rounding_weight", type=float, default=1.0, help="Weight for learned rounding loss")
+    parser.add_argument("--anchor_weight", type=float, default=0.1, help="Weight for anchor loss to prevent embedding space collapse")
+    parser.add_argument("--constant_rounding_weight", action="store_true", help="Keep rounding weight constant instead of decaying (DiffusionLM approach)")
     parser.add_argument("--use_cosine_fallback", action="store_true", help="Use cosine similarity instead of learned rounding")
     parser.add_argument("--use_learned_embeddings", action="store_true", help="Use custom learned embedding space")
     parser.add_argument("--embed_dim", type=int, default=None, help="Custom embedding dimension (uses pre-trained dim if not specified)")
@@ -537,7 +623,8 @@ if __name__ == "__main__":
               epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
               rounding_weight=args.rounding_weight, use_learned_embeddings=args.use_learned_embeddings,
               patience=args.patience, use_lr_scheduling=args.use_lr_scheduling, 
-              warmup_steps=args.warmup_steps)
+              warmup_steps=args.warmup_steps, anchor_weight=args.anchor_weight,
+              constant_rounding_weight=args.constant_rounding_weight)
 
     if args.sample:
         checkpoint = load_checkpoint(args.ckpt, device)
