@@ -181,7 +181,7 @@ def constant_rounding_weight_schedule(epoch, total_epochs, weight=0.4):
     return weight
 
 
-def anchor_loss(predicted_embeddings, target_embeddings, alpha=0.1):
+def anchor_loss(predicted_embeddings, target_embeddings, alpha=0.01):
     """Anchor loss to prevent embedding space collapse.
     
     Creates stronger connection between denoised embeddings and ground truth embeddings.
@@ -190,7 +190,7 @@ def anchor_loss(predicted_embeddings, target_embeddings, alpha=0.1):
     Args:
         predicted_embeddings: (B, L, embed_dim) - model predicted embeddings 
         target_embeddings: (B, L, embed_dim) - ground truth embeddings
-        alpha: loss weighting factor
+        alpha: loss weighting factor (reduced from 0.1 to 0.01 for numerical stability)
         
     Returns:
         anchor_loss: scalar loss value
@@ -198,14 +198,16 @@ def anchor_loss(predicted_embeddings, target_embeddings, alpha=0.1):
     return alpha * F.mse_loss(predicted_embeddings, target_embeddings)
 
 
-def embedding_anisotropy_score(embeddings):
+def embedding_anisotropy_score(embeddings, sample_size=1000):
     """Measure embedding space collapse using self-similarity anisotropy.
     
     Higher scores indicate better embedding diversity (less collapse).
     Based on DiffusionLM research for monitoring embedding space health.
+    Memory-optimized version using random sampling to avoid OOM on large vocabularies.
     
     Args:
         embeddings: (vocab_size, embed_dim) or (B, L, embed_dim)
+        sample_size: number of embeddings to sample for computation (default: 1000)
         
     Returns:
         anisotropy_score: scalar indicating embedding diversity
@@ -213,6 +215,12 @@ def embedding_anisotropy_score(embeddings):
     if embeddings.dim() == 3:
         # Flatten batch and sequence dimensions
         embeddings = embeddings.view(-1, embeddings.size(-1))
+    
+    # Sample embeddings to avoid memory issues with large vocabularies
+    vocab_size = embeddings.size(0)
+    if vocab_size > sample_size:
+        indices = torch.randperm(vocab_size, device=embeddings.device)[:sample_size]
+        embeddings = embeddings[indices]
     
     # Compute pairwise cosine similarities
     normalized = F.normalize(embeddings, p=2, dim=1)
